@@ -16,3 +16,9 @@ BRAT installs from the **GitHub Releases** of this repo (assets: `main.js` +
 `manifest.json`, release tag == manifest version). The copies at the repo root mirror
 the latest release for manual installs: copy both files into
 `<vault>/.obsidian/plugins/dump-sync/` and reload Obsidian.
+
+## Releasing (maintainer)
+
+Commit fresh `main.js` + `manifest.json` to the repo root, then push a tag matching
+the manifest version (e.g. `0.2.0`) — the `release` workflow creates the GitHub
+Release with both assets automatically (no manual upload needed).

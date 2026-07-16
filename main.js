@@ -28,68 +28,6 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian4 = require("obsidian");
 
-// src/client.ts
-var import_obsidian = require("obsidian");
-var BridgeClient = class {
-  constructor(baseUrl, apiKey) {
-    this.baseUrl = baseUrl;
-    this.apiKey = apiKey;
-  }
-  headers() {
-    return { authorization: `Bearer ${this.apiKey}` };
-  }
-  url(path) {
-    return `${this.baseUrl.replace(/\/+$/, "")}${path}`;
-  }
-  /** Reachability + auth probe for the settings tab. */
-  async testConnection() {
-    const res = await (0, import_obsidian.requestUrl)({ url: this.url("/v1/vault/status"), headers: this.headers(), throw: false });
-    if (res.status === 401) throw new Error("API-Key ung\xFCltig (401)");
-    if (res.status !== 200) throw new Error(`Server antwortet mit ${res.status}`);
-    return res.json;
-  }
-  async getManifest() {
-    const res = await (0, import_obsidian.requestUrl)({ url: this.url("/v1/vault/files"), headers: this.headers(), throw: false });
-    if (res.status === 503) return "not_ready";
-    if (res.status === 409) throw new Error("Vault-Sync ist auf dem Server nicht konfiguriert");
-    if (res.status === 401) throw new Error("API-Key ung\xFCltig (401)");
-    if (res.status !== 200) throw new Error(`Manifest: HTTP ${res.status}`);
-    return res.json;
-  }
-  async downloadFile(path) {
-    const res = await (0, import_obsidian.requestUrl)({
-      url: this.url(`/v1/vault/files/content?path=${encodeURIComponent(path)}`),
-      headers: this.headers(),
-      throw: false
-    });
-    if (res.status !== 200) throw new Error(`Download ${path}: HTTP ${res.status}`);
-    return res.arrayBuffer;
-  }
-  async pushBatch(batch) {
-    const res = await (0, import_obsidian.requestUrl)({
-      url: this.url("/v1/vault/files/push"),
-      method: "POST",
-      contentType: "application/json",
-      body: JSON.stringify(batch),
-      headers: this.headers(),
-      throw: false
-    });
-    if (res.status !== 202) throw new Error(`Push: HTTP ${res.status}`);
-  }
-  async pushStatus(batchId) {
-    const res = await (0, import_obsidian.requestUrl)({
-      url: this.url(`/v1/vault/push/${batchId}`),
-      headers: this.headers(),
-      throw: false
-    });
-    if (res.status !== 200) throw new Error(`Push-Status: HTTP ${res.status}`);
-    return res.json;
-  }
-};
-
-// src/sync/engine.ts
-var import_obsidian2 = require("obsidian");
-
 // ../../node_modules/.pnpm/zod@4.4.3/node_modules/zod/v4/classic/external.js
 var external_exports = {};
 __export(external_exports, {
@@ -14604,6 +14542,296 @@ function date4(params) {
 // ../../node_modules/.pnpm/zod@4.4.3/node_modules/zod/v4/classic/external.js
 config(en_default());
 
+// ../../packages/plugins/dist/chunk-NVQEC2BV.js
+var paletteSchema = external_exports.object({
+  colors: external_exports.array(
+    external_exports.object({
+      hex: external_exports.string().regex(/^#[0-9a-f]{6}$/, "lowercase #rrggbb").describe("Lowercase #rrggbb hex value."),
+      name: external_exports.string().min(1).max(40).describe("Short human color name, language of the note/content."),
+      role: external_exports.enum(["dominant", "accent", "background", "neutral"]).optional().describe("Role of the color in the image.")
+    })
+  ).min(2).max(12),
+  notes: external_exports.string().max(300).optional().describe("One short sentence about the overall mood, optional.")
+});
+var paletteManifest = {
+  id: "dump-palette",
+  fence: "dump-palette",
+  mimeType: "application/vnd.dump.palette+json",
+  version: 1,
+  engine: "llm",
+  payloadKind: "json",
+  schema: paletteSchema,
+  parse: (source) => paletteSchema.parse(JSON.parse(source)),
+  serialize: (payload) => JSON.stringify(payload, null, 2),
+  eligibility: { captureKinds: ["image"], mimePatterns: ["image/"] },
+  classifierSpec: {
+    description: "Extracts the color palette of the photo (hex values with names and roles).",
+    runWhen: 'the note explicitly asks for colors/palette (e.g. "extrahier die Farben").',
+    suggestWhen: "the photo is clearly about color/design/mood (interiors, art, fashion, materials)."
+  },
+  title: "Farbpalette",
+  emoji: "\u{1F3A8}",
+  suggestionLabel: "Farben extrahieren"
+};
+var ABC_MAX_CHARS = 4e3;
+function validateAbc(source) {
+  let text = source.trim();
+  const fenced = /^```[a-z-]*\s*\n([\s\S]*?)\n?```$/.exec(text);
+  if (fenced?.[1] !== void 0) text = fenced[1].trim();
+  if (text.length === 0) throw new Error("empty ABC");
+  if (text.length > ABC_MAX_CHARS) throw new Error(`ABC too long (${text.length} > ${ABC_MAX_CHARS})`);
+  if (!/^X:\s*\d+/m.test(text)) throw new Error("missing X: header");
+  if (!/^K:\s*\S+/m.test(text)) throw new Error("missing K: header");
+  const lines = text.split("\n");
+  const kIndex = lines.findIndex((line) => /^K:/.test(line));
+  const hasNotes = lines.slice(kIndex + 1).some((line) => !/^[A-Za-z]:/.test(line) && /[A-Ga-gz]/.test(line));
+  if (!hasNotes) throw new Error("no note line after the K: header");
+  return text;
+}
+var abcSchema = external_exports.string().min(1).max(ABC_MAX_CHARS + 100).describe("A tune in ABC notation with X: and K: headers.");
+var musicManifest = {
+  id: "abc",
+  fence: "abc",
+  mimeType: "text/vnd.abc",
+  // v2 (m12): hybrid engine chain SwiftF0 → basic-pitch → Gemini. The fence
+  // body contract (ABC text) is unchanged — no vault wave, old provenance
+  // stamps keep their meaning.
+  version: 2,
+  engine: "hybrid",
+  payloadKind: "text",
+  schema: abcSchema,
+  parse: validateAbc,
+  serialize: (payload) => payload.trim(),
+  eligibility: { captureKinds: ["audio"], mimePatterns: ["audio/", "video/"] },
+  classifierSpec: {
+    description: "Transcribes a hummed or sung melody to ABC notation (rendered as sheet music).",
+    runWhen: 'the note explicitly asks for notation/transcription (e.g. "als Noten").',
+    suggestWhen: "the recording is clearly music \u2014 humming, singing, an instrument."
+  },
+  title: "Notenblatt",
+  emoji: "\u{1F3BC}",
+  // m12.6: user-selectable engines for targeted re-runs ("Neu transkribieren").
+  // ids must match TranscriptionEngine (dsp/heuristic.ts).
+  engineOptions: [
+    { id: "swiftf0", label: "SwiftF0 (Gesumm/Stimme)" },
+    { id: "basic-pitch", label: "basic-pitch (Instrumente)" },
+    { id: "gemini", label: "Gemini (KI)" }
+  ],
+  suggestionLabel: "Als Noten transkribieren"
+};
+var musicAnalysisSchema = external_exports.object({
+  /** Rounded to one decimal; null when outside the 40–220 plausibility gate. */
+  bpm: external_exports.number().min(40).max(220).nullable(),
+  key: external_exports.object({
+    tonic: external_exports.string().min(1).max(2),
+    scale: external_exports.enum(["major", "minor"]),
+    strength: external_exports.number().min(0).max(1)
+  }).nullable(),
+  duration_seconds: external_exports.number().min(0),
+  /** Analysis window (capped) — shown when shorter than the recording. */
+  analyzed_seconds: external_exports.number().min(0),
+  replaygain_db: external_exports.number().nullable()
+});
+var musicAnalysisManifest = {
+  id: "dump-music-analysis",
+  fence: "dump-music-analysis",
+  mimeType: "application/vnd.dump.music-analysis+json",
+  version: 1,
+  engine: "code",
+  payloadKind: "json",
+  schema: musicAnalysisSchema,
+  parse: (source) => musicAnalysisSchema.parse(JSON.parse(source)),
+  serialize: (payload) => JSON.stringify(payload, null, 2),
+  eligibility: { captureKinds: ["audio"], mimePatterns: ["audio/", "video/"] },
+  classifierSpec: {
+    description: "Analyzes a recorded song: tempo (BPM), musical key, loudness.",
+    runWhen: "the note explicitly asks for BPM/tempo/key/a song analysis.",
+    suggestWhen: "the recording is a full/real song or recorded music \u2014 NOT a short hummed melody idea (the sheet-music plugin covers those)."
+  },
+  title: "Song-Analyse",
+  emoji: "\u{1F3A7}",
+  suggestionLabel: "Song analysieren"
+};
+var pluginManifests = {
+  [paletteManifest.id]: paletteManifest,
+  [musicManifest.id]: musicManifest,
+  [musicAnalysisManifest.id]: musicAnalysisManifest
+};
+
+// ../../packages/plugins/dist/chunk-2HOCJM4U.js
+function toSwatches(payload) {
+  return payload.colors.map((c) => ({
+    hex: c.hex,
+    name: c.name,
+    role: c.role ?? null,
+    ink: luminance(c.hex) > 0.45 ? "#1c1917" : "#fafaf9"
+  }));
+}
+function luminance(hex3) {
+  const channel = (i) => {
+    const v = Number.parseInt(hex3.slice(i, i + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+}
+
+// ../../packages/plugins/dist/chunk-Q43E7BKE.js
+var de = (v) => String(v).replace(".", ",");
+function mmss(totalSeconds) {
+  const s = Math.round(totalSeconds);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+function toStats(payload) {
+  const stats = [];
+  stats.push({ label: "Tempo", value: payload.bpm === null ? "unklar" : `${de(payload.bpm)} BPM` });
+  stats.push(
+    payload.key === null ? { label: "Tonart", value: "unklar" } : {
+      label: "Tonart",
+      value: `${payload.key.tonic}-${payload.key.scale === "minor" ? "Moll" : "Dur"}`,
+      detail: `Konfidenz ${de(payload.key.strength)}`
+    }
+  );
+  const windowNote = payload.analyzed_seconds < payload.duration_seconds ? ` (${mmss(payload.analyzed_seconds)} analysiert)` : "";
+  stats.push({ label: "L\xE4nge", value: `${mmss(payload.duration_seconds)}${windowNote}` });
+  if (payload.replaygain_db !== null) {
+    stats.push({ label: "Lautheit", value: `${de(payload.replaygain_db)} dB`, detail: "ReplayGain" });
+  }
+  return stats;
+}
+
+// ../../packages/plugins/dist/obsidian.js
+var paletteObsidianProcessor = {
+  manifest: paletteManifest,
+  render(el, payload) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex;flex-direction:column;gap:8px;margin:8px 0;";
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;";
+    for (const s of toSwatches(payload)) {
+      const swatch = document.createElement("div");
+      swatch.style.cssText = `background-color:${s.hex};color:${s.ink};min-width:88px;min-height:68px;flex:1 1 88px;max-width:144px;border-radius:12px;border:1px solid rgba(0,0,0,0.08);display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-end;gap:2px;padding:8px 10px;`;
+      swatch.title = s.role ? `${s.hex} \xB7 ${s.role}` : s.hex;
+      const name = document.createElement("span");
+      name.textContent = s.name;
+      name.style.cssText = "font-size:12px;font-weight:600;line-height:1.2;";
+      const hex3 = document.createElement("span");
+      hex3.textContent = s.hex;
+      hex3.style.cssText = "font-size:11px;font-family:monospace;opacity:0.85;";
+      swatch.append(name, hex3);
+      row.appendChild(swatch);
+    }
+    wrap.appendChild(row);
+    if (payload.notes) {
+      const notes = document.createElement("p");
+      notes.textContent = payload.notes;
+      notes.style.cssText = "font-size:12px;opacity:0.7;margin:0;";
+      wrap.appendChild(notes);
+    }
+    el.appendChild(wrap);
+  }
+};
+var songAnalysisObsidianProcessor = {
+  manifest: musicAnalysisManifest,
+  render(el, payload) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;";
+    for (const stat of toStats(payload)) {
+      const tile = document.createElement("div");
+      tile.style.cssText = "flex:1 1 112px;min-width:112px;max-width:176px;border-radius:12px;border:1px solid rgba(128,128,128,0.25);padding:10px 12px;display:flex;flex-direction:column;gap:2px;";
+      const label = document.createElement("span");
+      label.textContent = stat.label;
+      label.style.cssText = "font-size:11px;text-transform:uppercase;letter-spacing:0.08em;opacity:0.6;";
+      const value = document.createElement("span");
+      value.textContent = stat.value;
+      value.style.cssText = "font-size:16px;font-weight:700;line-height:1.2;";
+      tile.append(label, value);
+      if (stat.detail) {
+        const detail = document.createElement("span");
+        detail.textContent = stat.detail;
+        detail.style.cssText = "font-size:11px;opacity:0.6;";
+        tile.appendChild(detail);
+      }
+      row.appendChild(tile);
+    }
+    el.appendChild(row);
+  }
+};
+var obsidianProcessors = {
+  [paletteObsidianProcessor.manifest.fence]: paletteObsidianProcessor,
+  [songAnalysisObsidianProcessor.manifest.fence]: songAnalysisObsidianProcessor
+};
+
+// src/client.ts
+var import_obsidian = require("obsidian");
+function serverMessage(res) {
+  try {
+    const body = res.json;
+    const msg = body?.message ?? body?.error;
+    return msg ? ` \u2014 ${msg}` : "";
+  } catch {
+    return "";
+  }
+}
+var BridgeClient = class {
+  constructor(baseUrl, apiKey) {
+    this.baseUrl = baseUrl;
+    this.apiKey = apiKey;
+  }
+  headers() {
+    return { authorization: `Bearer ${this.apiKey}` };
+  }
+  url(path) {
+    return `${this.baseUrl.replace(/\/+$/, "")}${path}`;
+  }
+  /** Reachability + auth probe for the settings tab. */
+  async testConnection() {
+    const res = await (0, import_obsidian.requestUrl)({ url: this.url("/v1/vault/status"), headers: this.headers(), throw: false });
+    if (res.status === 401) throw new Error("API-Key ung\xFCltig (401)");
+    if (res.status !== 200) throw new Error(`Server antwortet mit ${res.status}`);
+    return res.json;
+  }
+  async getManifest() {
+    const res = await (0, import_obsidian.requestUrl)({ url: this.url("/v1/vault/files"), headers: this.headers(), throw: false });
+    if (res.status === 503) return "not_ready";
+    if (res.status === 409) throw new Error("Vault-Sync ist auf dem Server nicht konfiguriert");
+    if (res.status === 401) throw new Error("API-Key ung\xFCltig (401)");
+    if (res.status !== 200) throw new Error(`Manifest: HTTP ${res.status}`);
+    return res.json;
+  }
+  async downloadFile(path) {
+    const res = await (0, import_obsidian.requestUrl)({
+      url: this.url(`/v1/vault/files/content?path=${encodeURIComponent(path)}`),
+      headers: this.headers(),
+      throw: false
+    });
+    if (res.status !== 200) throw new Error(`Download ${path}: HTTP ${res.status}`);
+    return res.arrayBuffer;
+  }
+  async pushBatch(batch) {
+    const res = await (0, import_obsidian.requestUrl)({
+      url: this.url("/v1/vault/files/push"),
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify(batch),
+      headers: this.headers(),
+      throw: false
+    });
+    if (res.status !== 202) throw new Error(`Push: HTTP ${res.status}${serverMessage(res)}`);
+  }
+  async pushStatus(batchId) {
+    const res = await (0, import_obsidian.requestUrl)({
+      url: this.url(`/v1/vault/push/${batchId}`),
+      headers: this.headers(),
+      throw: false
+    });
+    if (res.status !== 200) throw new Error(`Push-Status: HTTP ${res.status}`);
+    return res.json;
+  }
+};
+
+// src/sync/engine.ts
+var import_obsidian2 = require("obsidian");
+
 // ../../packages/shared/dist/index.js
 var ITEM_TYPES = [
   "note",
@@ -14790,6 +15018,19 @@ var patchItemSchema = external_exports.object({
   folder_id: external_exports.uuid().nullable().optional()
 }).refine((v) => Object.values(v).some((x) => x !== void 0), {
   message: "at least one field must be provided"
+});
+var analyzeItemRequestSchema = external_exports.object({
+  /** Fence name of the plugin to run, e.g. 'dump-palette'. */
+  plugin: external_exports.string().min(1).max(64),
+  /** Pin one engine variant (m12.6) — must be listed in the manifest's engineOptions. */
+  engine: external_exports.string().min(1).max(32).optional(),
+  /** Replace an existing fence (m12.6 re-run) — success swaps it, failure keeps the old one. */
+  replace: external_exports.boolean().optional()
+});
+var analyzeItemResponseSchema = external_exports.object({
+  item_id: external_exports.uuid(),
+  status: external_exports.literal("pending"),
+  plugin: external_exports.string()
 });
 var mapPointSchema = external_exports.object({
   item_id: external_exports.uuid(),
@@ -15414,6 +15655,15 @@ var DumpSyncPlugin = class extends import_obsidian4.Plugin {
       () => this.saveData(this.data)
     );
     this.addSettingTab(new DumpSyncSettingTab(this.app, this));
+    for (const [fence, processor] of Object.entries(obsidianProcessors)) {
+      this.registerMarkdownCodeBlockProcessor(fence, (source, el) => {
+        try {
+          processor.render(el, processor.manifest.parse(source));
+        } catch {
+          el.createEl("pre", { text: source });
+        }
+      });
+    }
     this.addCommand({
       id: "sync-now",
       name: "Jetzt syncen",

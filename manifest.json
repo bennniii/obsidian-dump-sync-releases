@@ -1,9 +1,9 @@
 {
   "id": "dump-sync",
   "name": "dump sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.5.0",
-  "description": "Sync this vault with your dump server — no git on the device, conflicts never lose bytes.",
+  "description": "Sync this vault with your dump server \u2014 no git on the device, conflicts never lose bytes.",
   "author": "Benni",
   "isDesktopOnly": false
 }
